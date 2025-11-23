@@ -171,7 +171,6 @@ if not st.session_state.splash_done:
     )
     time.sleep(5)
     st.session_state.splash_done = True
-    st.experimental_rerun()
 
 
 # ---------------------- MAIN APP ----------------------

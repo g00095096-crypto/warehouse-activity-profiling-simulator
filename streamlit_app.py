@@ -49,9 +49,10 @@ def load_slotting_inputs():
         raise FileNotFoundError("Warehouse Challenge Dataset.xlsx not found next to streamlit_app.py")
 
     # TODO: change these if your sheet names differ
-    sku_raw = pd.read_excel(excel_path, sheet_name="SKUs")
-    lines_df = pd.read_excel(excel_path, sheet_name="OrderLines")
-    zone_raw = pd.read_excel(excel_path, sheet_name="Zones")
+    sku_raw = pd.read_excel(excel_path, sheet_name="SKU_Master")
+    lines_df = pd.read_excel(excel_path, sheet_name="Lines")
+    zone_raw = pd.read_excel(excel_path, sheet_name="Storage_Zone")
+
 
     return sku_raw, lines_df, zone_raw
 

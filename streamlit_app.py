@@ -105,7 +105,6 @@ if not st.session_state.splash_done:
 
     if st.button("Enter Simulator"):
         st.session_state.splash_done = True
-        st.experimental_rerun()
 
 else:
     # ---------------- MAIN DASHBOARD ----------------

@@ -2,44 +2,61 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 
+from slotting import run_slotting
+
 # ---------------------- PATHS & DATA LOADING ----------------------
 
 BASE_DIR = Path(__file__).resolve().parent
 
 
-def _safe_read_csv(filename: str):
-    path = BASE_DIR / filename
-    if path.exists():
-        return pd.read_csv(path)
-    return None
-
-
-def _safe_read_excel(filename: str):
-    path = BASE_DIR / filename
-    if path.exists():
-        return pd.read_excel(path)
-    return None
-
-
-def load_main_datasets():
+@st.cache_data
+def load_analysis_data():
     """
-    Loads all main datasets from the SAME folder as this file.
-
-    Expected files:
+    Load the three analytical CSVs used in Step 2 (demand, clusters, associations).
+    Files must sit in the SAME folder as this file:
       - SKU_Demand_Profile.csv
       - SKU_Clusters.csv
       - SKU_Associations.csv
-      - Warehouse Challenge Dataset.xlsx
     """
-    data = {}
-    data["demand"] = _safe_read_csv("SKU_Demand_Profile.csv")
-    data["clusters"] = _safe_read_csv("SKU_Clusters.csv")
-    data["associations"] = _safe_read_csv("SKU_Associations.csv")
-    data["warehouse_raw"] = _safe_read_excel("Warehouse Challenge Dataset.xlsx")
-    return data
+    demand = None
+    clusters = None
+    assoc = None
+
+    demand_path = BASE_DIR / "SKU_Demand_Profile.csv"
+    clusters_path = BASE_DIR / "SKU_Clusters.csv"
+    assoc_path = BASE_DIR / "SKU_Associations.csv"
+
+    if demand_path.exists():
+        demand = pd.read_csv(demand_path)
+
+    if clusters_path.exists():
+        clusters = pd.read_csv(clusters_path)
+
+    if assoc_path.exists():
+        assoc = pd.read_csv(assoc_path)
+
+    return {"demand": demand, "clusters": clusters, "associations": assoc}
 
 
-# ---------------------- STREAMLIT APP LAYOUT ----------------------
+@st.cache_data
+def load_slotting_inputs():
+    """
+    Load the input tables needed by run_slotting() from the Excel challenge file.
+    You can adjust sheet_name=... below to match your actual sheet names.
+    """
+    excel_path = BASE_DIR / "Warehouse Challenge Dataset.xlsx"
+    if not excel_path.exists():
+        raise FileNotFoundError("Warehouse Challenge Dataset.xlsx not found next to streamlit_app.py")
+
+    # TODO: change these if your sheet names differ
+    sku_raw = pd.read_excel(excel_path, sheet_name="SKUs")
+    lines_df = pd.read_excel(excel_path, sheet_name="OrderLines")
+    zone_raw = pd.read_excel(excel_path, sheet_name="Zones")
+
+    return sku_raw, lines_df, zone_raw
+
+
+# ---------------------- STREAMLIT APP CONFIG ----------------------
 
 st.set_page_config(
     page_title="Warehouse Activity Profiling Simulator",
@@ -49,6 +66,12 @@ st.set_page_config(
 # ---------- SPLASH SCREEN STATE ----------
 if "splash_done" not in st.session_state:
     st.session_state.splash_done = False
+
+if "slotting_results" not in st.session_state:
+    st.session_state.slotting_results = None
+
+
+# ---------------------- SPLASH OR MAIN ----------------------
 
 if not st.session_state.splash_done:
     st.markdown(
@@ -90,21 +113,20 @@ else:
 
     st.write(
         """
-        Welcome to the **Warehouse Activity Profiling Simulator**.
+        This app implements the **Warehouse Activity Profiling Simulator** with three layers,
+        following the course project specification:
 
-        Use the tabs below to explore:
-        - Analytical visualizations of demand, clusters, and associations
-        - A basic simulation panel
-        - Reporting and raw dataset views
+        1. Analytical Visualization Layer  
+        2. Optimization & Simulation Layer (slotting heuristic min Σ λⱼ · dₖ)  
+        3. Reporting Layer
         """
     )
 
-    # Load data once for all tabs
-    data = load_main_datasets()
-    demand_df = data.get("demand")
-    clusters_df = data.get("clusters")
-    assoc_df = data.get("associations")
-    raw_df = data.get("warehouse_raw")
+    # Load analytical datasets once for all tabs
+    datasets = load_analysis_data()
+    demand_df = datasets["demand"]
+    clusters_df = datasets["clusters"]
+    assoc_df = datasets["associations"]
 
     tab1, tab2, tab3 = st.tabs(
         [
@@ -123,74 +145,141 @@ else:
         with col1:
             st.markdown("### 📈 SKU Demand Profile")
             if demand_df is not None:
-                st.dataframe(demand_df.head())
+                st.dataframe(demand_df.head(50), use_container_width=True)
             else:
-                st.warning("`SKU_Demand_Profile.csv` not found in the app folder.")
+                st.warning("`SKU_Demand_Profile.csv` not found next to streamlit_app.py.")
 
             st.markdown("### 🧩 SKU Clusters")
             if clusters_df is not None:
-                st.dataframe(clusters_df.head())
+                st.dataframe(clusters_df.head(50), use_container_width=True)
             else:
-                st.info("`SKU_Clusters.csv` not found in the app folder.")
+                st.info("`SKU_Clusters.csv` not found.")
 
         with col2:
             st.markdown("### 🔗 SKU Associations")
             if assoc_df is not None:
-                st.dataframe(assoc_df.head())
+                st.dataframe(assoc_df.head(50), use_container_width=True)
             else:
-                st.info("`SKU_Associations.csv` not found in the app folder.")
+                st.info("`SKU_Associations.csv` not found.")
+
+            if demand_df is not None and "SKU_ID" in demand_df.columns:
+                st.markdown("### Quick demand summary")
+                st.write(f"Total SKUs: **{demand_df['SKU_ID'].nunique()}**")
 
     # ---------- TAB 2: OPTIMIZATION & SIMULATION ----------
     with tab2:
-        st.subheader("Simulation Panel")
+        st.subheader("Slotting Optimization & Simulation")
 
         st.markdown(
             """
-            Here you will integrate your **slotting optimization** and **simulation** logic.
+            The heuristic implemented here assigns SKUs to zones in order of descending
+            weekly demand λⱼ, to the closest compatible zone (by distance) with remaining
+            capacity. This is aligned with minimizing the expected travel effort:
 
-            For now, this tab:
-            - Shows how you could add controls (e.g., # of pickers, policy options)
-            - Uses the loaded datasets for interactive experiments
-            """
+            \\[
+            \\min \\sum_j \\lambda_j \\, d_k
+            \\]
+
+            subject to capacity and storage-type compatibility.
+            """,
+            unsafe_allow_html=True,
         )
 
-        st.sidebar.header("Simulation Controls")
-        num_pickers = st.sidebar.slider("Number of pickers", min_value=1, max_value=20, value=5)
-        policy = st.sidebar.selectbox(
-            "Storage policy",
-            ["Dedicated storage", "Random storage", "Class-based storage"]
-        )
+        st.sidebar.header("Slotting Controls")
 
-        st.write(f"**Selected number of pickers:** {num_pickers}")
-        st.write(f"**Selected storage policy:** {policy}")
+        run_button = st.sidebar.button("Run slotting heuristic")
 
-        if demand_df is not None:
-            st.markdown("#### Example: Top 10 SKUs by demand")
-            if "SKU" in demand_df.columns and "Daily_Demand" in demand_df.columns:
-                top10 = demand_df.sort_values("Daily_Demand", ascending=False).head(10)
-                st.dataframe(top10)
-            else:
-                st.info("Demand dataset loaded, but columns `SKU` and `Daily_Demand` were not found.")
+        if run_button:
+            try:
+                sku_raw, lines_df, zone_raw = load_slotting_inputs()
+                assignment_df, zone_util_df, total_travel_cost, zone_demand, heat_pivot = run_slotting(
+                    sku_raw, lines_df, zone_raw
+                )
+
+                st.session_state.slotting_results = {
+                    "assignment_df": assignment_df,
+                    "zone_util_df": zone_util_df,
+                    "total_travel_cost": total_travel_cost,
+                    "zone_demand": zone_demand,
+                    "heat_pivot": heat_pivot,
+                }
+
+                st.success("Slotting run completed successfully.")
+
+            except Exception as e:
+                st.error(f"Error while running slotting: {e}")
+
+        results = st.session_state.slotting_results
+
+        if results is None:
+            st.info("Press **Run slotting heuristic** in the sidebar to execute the model.")
         else:
-            st.info("Demand data is not loaded, so simulation examples are limited.")
+            assignment_df = results["assignment_df"]
+            zone_util_df = results["zone_util_df"]
+            total_travel_cost = results["total_travel_cost"]
+            zone_demand = results["zone_demand"]
+            heat_pivot = results["heat_pivot"]
+
+            st.markdown(f"**Total expected travel cost (Σ λⱼ · dₖ)**: `{total_travel_cost:,.2f}`")
+
+            st.markdown("### Assigned zones per SKU (first 30 rows)")
+            st.dataframe(assignment_df.head(30), use_container_width=True)
+
+            st.markdown("### Zone utilization")
+            st.dataframe(zone_util_df, use_container_width=True)
+
+            st.markdown("### Demand per zone (Σ λⱼ in each zone)")
+            st.dataframe(zone_demand, use_container_width=True)
+
+            st.markdown("### Heatmap pivot (Storage_Type × ABC_Class, Σ λⱼ)")
+            st.dataframe(heat_pivot, use_container_width=True)
 
     # ---------- TAB 3: REPORTING LAYER ----------
     with tab3:
-        st.subheader("Reporting & Raw Data View")
+        st.subheader("Reporting & Summary KPIs")
 
         st.markdown(
             """
-            This layer is intended for:
-            - Management-level KPIs
-            - Summary statistics
-            - Exportable tables
+            This layer summarizes key performance indicators for management reporting:
+            - Total expected travel cost under the current slotting
+            - Zone utilization levels
+            - Basic dataset overview
             """
         )
 
-        if raw_df is not None:
-            st.markdown("### 🧾 Warehouse Challenge Dataset (first 50 rows)")
-            st.dataframe(raw_df.head(50))
-            st.markdown(f"**Total rows in dataset:** {len(raw_df)}")
+        results = st.session_state.slotting_results
+
+        if results is None:
+            st.info("Run the slotting heuristic in the **Optimization & Simulation** tab to see KPIs here.")
         else:
-            st.info("`Warehouse Challe
+            total_travel_cost = results["total_travel_cost"]
+            zone_util_df = results["zone_util_df"]
+
+            st.markdown("### Key KPI")
+            st.metric(
+                label="Total expected travel cost (Σ λⱼ · dₖ)",
+                value=f"{total_travel_cost:,.2f}",
+            )
+
+            st.markdown("### Zone utilization overview")
+            st.dataframe(zone_util_df[[
+                "Zone_ID",
+                "Storage_Type",
+                "Capacity_m3",
+                "Used_Volume_m3",
+                "Utilization_pct",
+                "Distance_m",
+            ]], use_container_width=True)
+
+        st.markdown("### Raw challenge dataset preview")
+        try:
+            excel_path = BASE_DIR / "Warehouse Challenge Dataset.xlsx"
+            if excel_path.exists():
+                raw_df_preview = pd.read_excel(excel_path, nrows=50)
+                st.dataframe(raw_df_preview, use_container_width=True)
+                st.caption("First 50 rows from Warehouse Challenge Dataset.xlsx")
+            else:
+                st.info("`Warehouse Challenge Dataset.xlsx` not found next to streamlit_app.py.")
+        except Exception as e:
+            st.error(f"Could not load preview of challenge dataset: {e}")
 

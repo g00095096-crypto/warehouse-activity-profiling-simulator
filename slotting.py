@@ -197,3 +197,4 @@ def run_slotting(sku_raw: pd.DataFrame,
     total_travel_cost = float(assign_with_dist["Expected_Travel_Cost"].sum())
 
     return assignment_df, zone_utilization_df, total_travel_cost, zone_demand, heat_pivot
+

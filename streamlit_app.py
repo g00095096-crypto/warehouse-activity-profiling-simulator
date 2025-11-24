@@ -102,7 +102,7 @@ def load_slotting_inputs_from_bytes(xls_bytes: bytes):
 def load_challenge_excel(uploaded_file):
     """
     Wrapper: use uploaded file if provided, else fall back to local
-    Warehouse Challenge Dataset.xlsx in the repo (for your professor).
+    Warehouse Challenge Dataset.xlsx in the repo.
     Returns bytes or raises FileNotFoundError.
     """
     if uploaded_file is not None:
@@ -160,7 +160,7 @@ if not st.session_state.splash_done:
                 Warehouse Activity Profiling Simulator
             </div>
             <div style="font-size:16px;margin-bottom:4px;">
-                Developed for INE 494-5 / Senior Design Project
+                Developed for INE 494-5 / Warehousing Challenge
             </div>
             <div style="font-size:14px;color:#555;">
                 Loading Slotting Simulator... Please wait.
